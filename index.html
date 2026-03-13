@@ -193,7 +193,7 @@ label.fl{font-size:11px;color:var(--muted);display:block;margin-bottom:5px;font-
   </div>
 </div>
 <script>
-const BACKEND = "https://YOUR-APP.onrender.com"; // CHANGE THIS
+const BACKEND = "https://placement-backend-1-sx3b.onrender.com";
 
 let masterHeaders = [];
 let matchedRows   = [];
@@ -262,11 +262,9 @@ function buildColGrid() {
   const grid = document.getElementById("colGrid");
   grid.innerHTML = "";
   document.getElementById("colSearch").value = "";
-  // Inject Year of Study as a special column (always available, auto-derived)
-  const yosItem = makeColItem("Year of Study", 1, true);
-  grid.appendChild(yosItem);
+  // YOS injected dynamically by applyDynamicColumns() after roll matching
   masterHeaders.filter(h => !isExcluded(h)).forEach((h, idx) => {
-    grid.appendChild(makeColItem(h, idx + 2, false));
+    grid.appendChild(makeColItem(h, idx + 1, false));
   });
   updateOrderNumbers();
 }
@@ -359,13 +357,10 @@ function toggleCol(chkEl) {
 
   const isNowChecked = !item.classList.contains("checked"); // about to toggle
 
-  // Warn if deselecting Year of Study and multiple years present
-  if (!isNowChecked && item.dataset.col === "Year of Study" && matchedRows.length) {
-    const years = new Set(matchedRows.map(r => getYearOfStudy(getRollNumber(r))));
-    if (years.size > 1) {
-      document.getElementById("yosOverlay").classList.add("open");
-      return; // block deselection
-    }
+  // Warn if deselecting Year of Study when multiple years present
+  if (!isNowChecked && item.dataset.col === "Year of Study" && hasMultipleYears()) {
+    document.getElementById("yosOverlay").classList.add("open");
+    return; // block deselection
   }
 
   item.classList.toggle("checked");
@@ -407,11 +402,7 @@ function filterCols(query) {
 function selectAll()       { document.querySelectorAll(".col-item").forEach(d => d.classList.add("checked"));    updatePreview(); }
 function deselectAll() {
   document.querySelectorAll(".col-item").forEach(d => {
-    // Keep Year of Study checked if multiple years present
-    if (d.dataset.col === "Year of Study" && matchedRows.length) {
-      const years = new Set(matchedRows.map(r => getYearOfStudy(getRollNumber(r))));
-      if (years.size > 1) { return; } // skip deselecting
-    }
+    if (d.dataset.col === "Year of Study" && hasMultipleYears()) return;
     d.classList.remove("checked");
   });
   updatePreview();
@@ -439,7 +430,7 @@ function doFullReset() {
     `<div style="padding:20px;color:var(--muted);font-size:13px;text-align:center;">Match roll numbers to preview data</div>`;
   document.getElementById("generateBtn").disabled   = true;
   // Columns — full rebuild resets order + checks everything
-  if (masterHeaders.length) buildColGrid();
+  if (masterHeaders.length) { buildColGrid(); applyDynamicColumns(); }
   toast("Everything reset ✓", "success");
 }
 
@@ -456,7 +447,12 @@ async function matchRolls() {
     const ul = document.getElementById("unmatchedList");
     if (d.unmatched.length) { ul.style.display="block"; ul.innerHTML=`Not found: ${d.unmatched.join(", ")}`; }
     else ul.style.display="none";
-    if (matchedRows.length) { document.getElementById("generateBtn").disabled=false; updatePreview(); toast(`${matchedRows.length} students matched`, "success"); }
+    if (matchedRows.length) {
+      document.getElementById("generateBtn").disabled = false;
+      applyDynamicColumns();
+      updatePreview();
+      toast(`${matchedRows.length} students matched`, "success");
+    }
   } catch(e) { toast(e.message, "error"); }
 }
 
@@ -505,15 +501,83 @@ function getRollNumber(row) {
 function getYearOfStudy(roll) {
   if (!roll) return "Unknown";
   const prefix = roll.trim().substring(0, 2);
-  const currentYear = new Date().getFullYear() % 100; // e.g. 25 for 2025
+  const currentYear = new Date().getFullYear() % 100;
   const admissionYear = parseInt(prefix);
   if (isNaN(admissionYear)) return "Unknown";
   const diff = currentYear - admissionYear;
-  // Academic year starts in July — adjust if before July
-  const month = new Date().getMonth(); // 0=Jan
-  const yearOfStudy = month >= 6 ? diff + 1 : diff; // July onwards = new academic year
-  const labels = { 1: "1st Year", 2: "2nd Year", 3: "3rd Year", 4: "4th Year" };
-  return labels[yearOfStudy] || "Unknown";
+  const month = new Date().getMonth();
+  const yearOfStudy = month >= 6 ? diff + 1 : diff;
+  return {1:"1st Year",2:"2nd Year",3:"3rd Year",4:"4th Year"}[yearOfStudy] || "Unknown";
+}
+
+function getUniqueYears() {
+  return new Set(matchedRows.map(r => getYearOfStudy(getRollNumber(r))));
+}
+
+function hasMultipleYears() {
+  return getUniqueYears().size > 1;
+}
+
+// ── Semester visibility ──
+const YEAR_MAX_SEM = {"1st Year":2,"2nd Year":4,"3rd Year":6,"4th Year":8};
+
+function getSemesterNumber(header) {
+  const h = header.toLowerCase();
+  const s = h.match(/sgpa for (\d+)/);
+  if (s) return parseInt(s[1]);
+  const c = h.match(/cgpa.*till.*?(\d+)/);
+  if (c) return parseInt(c[1]);
+  return null;
+}
+
+function getMaxSem() {
+  if (!matchedRows.length) return 8;
+  let max = 0;
+  matchedRows.forEach(r => {
+    const sem = YEAR_MAX_SEM[getYearOfStudy(getRollNumber(r))] || 8;
+    if (sem > max) max = sem;
+  });
+  return max;
+}
+
+function applyDynamicColumns() {
+  const maxSem  = getMaxSem();
+  const multiYr = hasMultipleYears();
+  const grid    = document.getElementById("colGrid");
+
+  // Handle Year of Study item
+  let yosItem = grid.querySelector('[data-col="Year of Study"]');
+  if (multiYr) {
+    if (!yosItem) {
+      // Add it as first item
+      yosItem = makeColItem("Year of Study", 1, true);
+      grid.insertBefore(yosItem, grid.firstChild);
+    }
+    yosItem.style.display = "";
+    yosItem.classList.add("checked");
+  } else {
+    if (yosItem) {
+      yosItem.style.display = "none";
+      yosItem.classList.remove("checked");
+    }
+  }
+
+  // Handle semester columns
+  document.querySelectorAll(".col-item").forEach(item => {
+    const col    = item.dataset.col;
+    const semNum = getSemesterNumber(col);
+    if (semNum !== null) {
+      if (semNum > maxSem) {
+        item.style.display = "none";
+        item.classList.remove("checked");
+      } else {
+        item.style.display = "";
+        item.classList.add("checked");
+      }
+    }
+  });
+
+  updateOrderNumbers();
 }
 
 function buildOutputData(cols) {
@@ -525,6 +589,7 @@ function buildOutputData(cols) {
     });
     return o;
   });
+  // Note: YOS is only in cols when hasMultipleYears() — handled by applyDynamicColumns
 
   // Sort: 1st Year → 4th Year, then A-Z by name within each year
   const yearOrder = { "1st Year":1, "2nd Year":2, "3rd Year":3, "4th Year":4, "Unknown":5 };
